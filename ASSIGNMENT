@@ -1,0 +1,569 @@
+/*
+ * STAFF RECORD HASHING SYSTEM
+ * ---------------------------------------------------------------
+ * A console application that stores staff records inside a hash
+ * table and supports four different collision handling schemes:
+ *      (a) Separate Chaining
+ *      (b) Linear Probing
+ *      (c) Quadratic Probing
+ *      (d) Double Hashing
+ *
+ * Every scheme shares the same primary hash function:
+ *      h(key) = key % SLOTS
+ * A prime table size (SLOTS = 11) is used here so that the probe
+ * sequence for quadratic probing and double hashing visits distinct
+ * slots more evenly.
+ * ---------------------------------------------------------------
+ */
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <time.h>
+
+#define SLOTS        11         /* prime table size for the demo run   */
+#define NAME_LEN     30
+#define DIV_LEN      20
+#define STEP_PRIME   5           /* auxiliary prime for double hashing  */
+#define FREE_SLOT   -1
+#define TOMB_SLOT   -2
+
+/* ---------------------------- staff record ------------------------ */
+typedef struct StaffRecord {
+    int   staffId;
+    char  fullName[NAME_LEN];
+    char  division[DIV_LEN];
+    float payAmount;
+} StaffRecord;
+
+typedef struct Bucket {
+    StaffRecord data;
+    struct Bucket *link;
+} Bucket;
+
+/* ============================ TABLES =============================== */
+Bucket      *chainSlots[SLOTS];
+StaffRecord  linSlots[SLOTS];      int linState[SLOTS];
+StaffRecord  quadSlots[SLOTS];     int quadState[SLOTS];
+StaffRecord  dhSlots[SLOTS];       int dhState[SLOTS];
+
+long collisionTally = 0;
+
+/* ============================ HASHING ================================ */
+int primaryHash(int key)   { return key % SLOTS; }
+int secondaryHash(int key) { return STEP_PRIME - (key % STEP_PRIME); }
+
+/* ============================================================
+   (a) SEPARATE CHAINING
+   ============================================================ */
+void chainSetup(void) { for (int i = 0; i < SLOTS; i++) chainSlots[i] = NULL; }
+
+void chainAdd(StaffRecord r) {
+    int pos = primaryHash(r.staffId);
+    Bucket *b = (Bucket *) malloc(sizeof(Bucket));
+    b->data = r; b->link = NULL;
+
+    if (chainSlots[pos] != NULL) collisionTally++;
+
+    if (chainSlots[pos] == NULL) {
+        chainSlots[pos] = b;
+    } else {
+        Bucket *walk = chainSlots[pos];
+        while (walk->link != NULL) walk = walk->link;
+        walk->link = b;
+    }
+}
+
+Bucket *chainFind(int staffId, int *hops) {
+    Bucket *walk = chainSlots[primaryHash(staffId)];
+    *hops = 0;
+    while (walk != NULL) {
+        (*hops)++;
+        if (walk->data.staffId == staffId) return walk;
+        walk = walk->link;
+    }
+    return NULL;
+}
+
+int chainRemove(int staffId) {
+    int pos = primaryHash(staffId);
+    Bucket *walk = chainSlots[pos], *prev = NULL;
+    while (walk != NULL) {
+        if (walk->data.staffId == staffId) {
+            if (prev == NULL) chainSlots[pos] = walk->link;
+            else prev->link = walk->link;
+            free(walk);
+            return 1;
+        }
+        prev = walk;
+        walk = walk->link;
+    }
+    return 0;
+}
+
+void chainShow(void) {
+    printf("\n%-6s | %s\n", "Slot", "Bucket contents (StaffID:Name:Division:Pay)");
+    printf("--------------------------------------------------------------------\n");
+    for (int i = 0; i < SLOTS; i++) {
+        printf("%-6d | ", i);
+        Bucket *walk = chainSlots[i];
+        if (walk == NULL) printf("-- free --");
+        while (walk != NULL) {
+            printf("[%d:%s:%s:%.2f] -> ", walk->data.staffId, walk->data.fullName,
+                   walk->data.division, walk->data.payAmount);
+            walk = walk->link;
+        }
+        printf("\n");
+    }
+}
+
+/* ============================================================
+   (b) LINEAR PROBING
+   ============================================================ */
+void linSetup(void) { for (int i = 0; i < SLOTS; i++) linState[i] = FREE_SLOT; }
+
+int linAdd(StaffRecord r) {
+    int home = primaryHash(r.staffId), pos = home, step = 0;
+    while (linState[pos] == 1) {
+        collisionTally++;
+        step++;
+        pos = (home + step) % SLOTS;
+        if (step == SLOTS) return 0;
+    }
+    linSlots[pos] = r; linState[pos] = 1;
+    return 1;
+}
+
+int linFind(int staffId, int *hops) {
+    int home = primaryHash(staffId), pos = home, step = 0;
+    *hops = 0;
+    while (linState[pos] != FREE_SLOT) {
+        (*hops)++;
+        if (linState[pos] == 1 && linSlots[pos].staffId == staffId) return pos;
+        step++;
+        pos = (home + step) % SLOTS;
+        if (step == SLOTS) break;
+    }
+    return -1;
+}
+
+int linRemove(int staffId) {
+    int hops;
+    int pos = linFind(staffId, &hops);
+    if (pos == -1) return 0;
+    linState[pos] = TOMB_SLOT;
+    return 1;
+}
+
+void linShow(void) {
+    printf("\n%-6s | %-9s | %s\n", "Slot", "State", "StaffID:Name:Division:Pay");
+    printf("--------------------------------------------------------------------\n");
+    for (int i = 0; i < SLOTS; i++) {
+        if (linState[i] == 1)
+            printf("%-6d | %-9s | %d:%s:%s:%.2f\n", i, "FILLED",
+                   linSlots[i].staffId, linSlots[i].fullName, linSlots[i].division, linSlots[i].payAmount);
+        else if (linState[i] == TOMB_SLOT)
+            printf("%-6d | %-9s | -\n", i, "REMOVED");
+        else
+            printf("%-6d | %-9s | -\n", i, "free");
+    }
+}
+
+/* ============================================================
+   (c) QUADRATIC PROBING
+   ============================================================ */
+void quadSetup(void) { for (int i = 0; i < SLOTS; i++) quadState[i] = FREE_SLOT; }
+
+int quadAdd(StaffRecord r) {
+    int home = primaryHash(r.staffId);
+    for (int step = 0; step < SLOTS; step++) {
+        int pos = (home + step * step) % SLOTS;
+        if (quadState[pos] != 1) { quadSlots[pos] = r; quadState[pos] = 1; return 1; }
+        collisionTally++;
+    }
+    return 0;
+}
+
+int quadFind(int staffId, int *hops) {
+    int home = primaryHash(staffId);
+    *hops = 0;
+    for (int step = 0; step < SLOTS; step++) {
+        int pos = (home + step * step) % SLOTS;
+        (*hops)++;
+        if (quadState[pos] == FREE_SLOT) return -1;
+        if (quadState[pos] == 1 && quadSlots[pos].staffId == staffId) return pos;
+    }
+    return -1;
+}
+
+int quadRemove(int staffId) {
+    int hops;
+    int pos = quadFind(staffId, &hops);
+    if (pos == -1) return 0;
+    quadState[pos] = TOMB_SLOT;
+    return 1;
+}
+
+void quadShow(void) {
+    printf("\n%-6s | %-9s | %s\n", "Slot", "State", "StaffID:Name:Division:Pay");
+    printf("--------------------------------------------------------------------\n");
+    for (int i = 0; i < SLOTS; i++) {
+        if (quadState[i] == 1)
+            printf("%-6d | %-9s | %d:%s:%s:%.2f\n", i, "FILLED",
+                   quadSlots[i].staffId, quadSlots[i].fullName, quadSlots[i].division, quadSlots[i].payAmount);
+        else if (quadState[i] == TOMB_SLOT)
+            printf("%-6d | %-9s | -\n", i, "REMOVED");
+        else
+            printf("%-6d | %-9s | -\n", i, "free");
+    }
+}
+
+/* ============================================================
+   (d) DOUBLE HASHING
+   ============================================================ */
+void dhSetup(void) { for (int i = 0; i < SLOTS; i++) dhState[i] = FREE_SLOT; }
+
+int dhAdd(StaffRecord r) {
+    int home = primaryHash(r.staffId);
+    int skip = secondaryHash(r.staffId);
+    for (int step = 0; step < SLOTS; step++) {
+        int pos = (home + step * skip) % SLOTS;
+        if (dhState[pos] != 1) { dhSlots[pos] = r; dhState[pos] = 1; return 1; }
+        collisionTally++;
+    }
+    return 0;
+}
+
+int dhFind(int staffId, int *hops) {
+    int home = primaryHash(staffId);
+    int skip = secondaryHash(staffId);
+    *hops = 0;
+    for (int step = 0; step < SLOTS; step++) {
+        int pos = (home + step * skip) % SLOTS;
+        (*hops)++;
+        if (dhState[pos] == FREE_SLOT) return -1;
+        if (dhState[pos] == 1 && dhSlots[pos].staffId == staffId) return pos;
+    }
+    return -1;
+}
+
+int dhRemove(int staffId) {
+    int hops;
+    int pos = dhFind(staffId, &hops);
+    if (pos == -1) return 0;
+    dhState[pos] = TOMB_SLOT;
+    return 1;
+}
+
+void dhShow(void) {
+    printf("\n%-6s | %-9s | %s\n", "Slot", "State", "StaffID:Name:Division:Pay");
+    printf("--------------------------------------------------------------------\n");
+    for (int i = 0; i < SLOTS; i++) {
+        if (dhState[i] == 1)
+            printf("%-6d | %-9s | %d:%s:%s:%.2f\n", i, "FILLED",
+                   dhSlots[i].staffId, dhSlots[i].fullName, dhSlots[i].division, dhSlots[i].payAmount);
+        else if (dhState[i] == TOMB_SLOT)
+            printf("%-6d | %-9s | -\n", i, "REMOVED");
+        else
+            printf("%-6d | %-9s | -\n", i, "free");
+    }
+}
+
+/* ============================================================
+   DEMO DATA — chosen so several IDs collide on primaryHash(key)=key%11
+   204 % 11 = 6 ; 226 % 11 = 6 ; 248 % 11 = 6  (three-way collision)
+   ============================================================ */
+void seedDemoRecords(void) {
+    StaffRecord roster[] = {
+        {204, "Naveen",  "Ops",      36500},
+        {215, "Priyal",  "Payroll",  41200},
+        {226, "Sanjana", "Ops",      38900},
+        {248, "Ritvik",  "Support",  33400},
+        {231, "Meghana", "Payroll",  45600},
+        {209, "Ashwin",  "Support",  39800},
+    };
+    int n = sizeof(roster) / sizeof(roster[0]);
+
+    chainSetup(); linSetup(); quadSetup(); dhSetup();
+    collisionTally = 0;
+
+    printf("Seeding %d staff records across all four tables...\n", n);
+    for (int i = 0; i < n; i++) {
+        chainAdd(roster[i]);
+        linAdd(roster[i]);
+        quadAdd(roster[i]);
+        dhAdd(roster[i]);
+        printf("  Added StaffID %d (%s)  -> primaryHash = %d\n",
+               roster[i].staffId, roster[i].fullName, primaryHash(roster[i].staffId));
+    }
+}
+
+/* ============================================================
+   BENCHMARK DRIVER
+   ============================================================ */
+typedef struct BNode { StaffRecord data; struct BNode *link; } BNode;
+
+void benchChainAdd(BNode **tab, int size, StaffRecord r, long *coll) {
+    int pos = r.staffId % size;
+    if (tab[pos] != NULL) (*coll)++;
+    BNode *b = (BNode *) malloc(sizeof(BNode));
+    b->data = r; b->link = tab[pos];
+    tab[pos] = b;
+}
+
+int benchChainFind(BNode **tab, int size, int key) {
+    int pos = key % size;
+    BNode *walk = tab[pos];
+    int hops = 0;
+    while (walk) { hops++; if (walk->data.staffId == key) return hops; walk = walk->link; }
+    return hops;
+}
+
+int benchOpenAdd(StaffRecord *tab, int *state, int size, StaffRecord r,
+                  long *coll, int scheme /*0 linear,1 quad,2 double*/) {
+    int home = r.staffId % size;
+    int skip = scheme == 2 ? (STEP_PRIME - (r.staffId % STEP_PRIME)) : 1;
+    if (skip == 0) skip = 1;
+    for (int step = 0; step < size; step++) {
+        int pos = (scheme == 1) ? (home + step * step) % size : (home + step * skip) % size;
+        if (state[pos] != 1) { tab[pos] = r; state[pos] = 1; return 1; }
+        (*coll)++;
+    }
+    return 0;
+}
+
+int benchOpenFind(StaffRecord *tab, int *state, int size, int key, int scheme) {
+    int home = key % size;
+    int skip = scheme == 2 ? (STEP_PRIME - (key % STEP_PRIME)) : 1;
+    if (skip == 0) skip = 1;
+    int hops = 0;
+    for (int step = 0; step < size; step++) {
+        int pos = (scheme == 1) ? (home + step * step) % size : (home + step * skip) % size;
+        hops++;
+        if (state[pos] == FREE_SLOT) return hops;
+        if (state[pos] == 1 && tab[pos].staffId == key) return hops;
+    }
+    return hops;
+}
+
+void runBenchmark(void) {
+    int sizes[] = {150, 600, 1200, 6000};
+    int setCount = 4;
+
+    printf("\n======================================================================\n");
+    printf(" BENCHMARK: FOUR COLLISION-HANDLING SCHEMES ON IDENTICAL WORKLOADS\n");
+    printf(" (table size = 1.6 x N, load factor ~ 0.625, random 6-digit StaffIDs,\n");
+    printf("  N inserts + N lookups timed per scheme)\n");
+    printf("======================================================================\n");
+    printf("%-8s %-12s %-14s %-14s %-12s %-10s\n",
+           "N", "Scheme", "AddTime(s)", "FindTime(s)", "Collisions", "AvgHops");
+    printf("----------------------------------------------------------------------------------\n");
+
+    srand(2024);
+
+    for (int s = 0; s < setCount; s++) {
+        int n = sizes[s];
+        int size = (int)(n * 1.6) + 1;
+        int *keys = (int *) malloc(sizeof(int) * n);
+        for (int i = 0; i < n; i++) keys[i] = 200000 + rand() % 700000;
+
+        /* Separate Chaining */
+        {
+            BNode **tab = (BNode **) calloc(size, sizeof(BNode *));
+            long coll = 0;
+            clock_t t0 = clock();
+            for (int i = 0; i < n; i++) {
+                StaffRecord r = {keys[i], "Staff", "Div", 30000};
+                benchChainAdd(tab, size, r, &coll);
+            }
+            double addTime = (double)(clock() - t0) / CLOCKS_PER_SEC;
+
+            long totalHops = 0;
+            t0 = clock();
+            for (int i = 0; i < n; i++) totalHops += benchChainFind(tab, size, keys[i]);
+            double findTime = (double)(clock() - t0) / CLOCKS_PER_SEC;
+
+            printf("%-8d %-12s %-14.6f %-14.6f %-12ld %-10.2f\n",
+                   n, "Chaining", addTime, findTime, coll, (double)totalHops / n);
+
+            for (int i = 0; i < size; i++) { BNode *c = tab[i]; while (c) { BNode *t = c; c = c->link; free(t); } }
+            free(tab);
+        }
+
+        const char *schemeNames[3] = {"Linear", "Quadratic", "DoubleHash"};
+        for (int scheme = 0; scheme < 3; scheme++) {
+            StaffRecord *tab = (StaffRecord *) malloc(sizeof(StaffRecord) * size);
+            int *state = (int *) malloc(sizeof(int) * size);
+            for (int i = 0; i < size; i++) state[i] = FREE_SLOT;
+            long coll = 0;
+
+            clock_t t0 = clock();
+            for (int i = 0; i < n; i++) {
+                StaffRecord r = {keys[i], "Staff", "Div", 30000};
+                benchOpenAdd(tab, state, size, r, &coll, scheme);
+            }
+            double addTime = (double)(clock() - t0) / CLOCKS_PER_SEC;
+
+            long totalHops = 0;
+            t0 = clock();
+            for (int i = 0; i < n; i++) totalHops += benchOpenFind(tab, state, size, keys[i], scheme);
+            double findTime = (double)(clock() - t0) / CLOCKS_PER_SEC;
+
+            printf("%-8d %-12s %-14.6f %-14.6f %-12ld %-10.2f\n",
+                   n, schemeNames[scheme], addTime, findTime, coll, (double)totalHops / n);
+
+            free(tab); free(state);
+        }
+        printf("----------------------------------------------------------------------------------\n");
+        free(keys);
+    }
+}
+
+/* ============================================================
+   TEST SUITE
+   ============================================================ */
+void runTestSuite(void) {
+    int pass = 0, total = 0;
+    printf("\n======================================================================\n");
+    printf(" VALIDATION TEST SUITE\n");
+    printf("======================================================================\n");
+
+    seedDemoRecords();
+
+    total++;
+    { int h; Bucket *r = chainFind(226, &h);
+      int ok = (r != NULL && strcmp(r->data.fullName, "Sanjana") == 0);
+      pass += ok;
+      printf("T1 [Chaining] find StaffID 226   -> %-4s (hops=%d)\n", ok ? "PASS" : "FAIL", h); }
+
+    total++;
+    { int h; Bucket *r = chainFind(248, &h);
+      int ok = (r != NULL && r->data.staffId == 248);
+      pass += ok;
+      printf("T2 [Chaining] find colliding 248 -> %-4s (hops=%d)\n", ok ? "PASS" : "FAIL", h); }
+
+    total++;
+    { int h; Bucket *r = chainFind(777, &h);
+      int ok = (r == NULL);
+      pass += ok;
+      printf("T3 [Chaining] find missing 777   -> %-4s\n", ok ? "PASS" : "FAIL"); }
+
+    total++;
+    { int h; int pos = linFind(226, &h);
+      int ok = (pos != -1 && linSlots[pos].staffId == 226);
+      pass += ok;
+      printf("T4 [Linear]   find colliding 226 -> %-4s (slot=%d, hops=%d)\n", ok ? "PASS" : "FAIL", pos, h); }
+
+    total++;
+    { int h; int pos = quadFind(248, &h);
+      int ok = (pos != -1 && quadSlots[pos].staffId == 248);
+      pass += ok;
+      printf("T5 [Quadratic] find colliding 248 -> %-4s (slot=%d, hops=%d)\n", ok ? "PASS" : "FAIL", pos, h); }
+
+    total++;
+    { int h; int pos = dhFind(226, &h);
+      int ok = (pos != -1 && dhSlots[pos].staffId == 226);
+      pass += ok;
+      printf("T6 [Double]    find colliding 226 -> %-4s (slot=%d, hops=%d)\n", ok ? "PASS" : "FAIL", pos, h); }
+
+    total++;
+    { linRemove(215);
+      int h; int pos = linFind(215, &h);
+      int ok = (pos == -1);
+      pass += ok;
+      printf("T7 [Linear]   remove 215, re-find -> %-4s\n", ok ? "PASS" : "FAIL"); }
+
+    total++;
+    { int h; int pos = linFind(226, &h);
+      int ok = (pos != -1 && linSlots[pos].staffId == 226);
+      pass += ok;
+      printf("T8 [Linear]   sibling 226 still reachable -> %-4s\n", ok ? "PASS" : "FAIL"); }
+
+    printf("----------------------------------------------------------------------------------\n");
+    printf("SUITE RESULT: %d / %d CASES PASSED\n", pass, total);
+    printf("======================================================================\n");
+}
+
+/* ============================================================
+   MENU-DRIVEN CRUD
+   ============================================================ */
+void showAllTables(void) {
+    printf("\n########### SEPARATE CHAINING ###########\n"); chainShow();
+    printf("\n########### LINEAR PROBING ###############\n"); linShow();
+    printf("\n########### QUADRATIC PROBING #############\n"); quadShow();
+    printf("\n########### DOUBLE HASHING ################\n"); dhShow();
+}
+
+void addStaffInteractive(void) {
+    StaffRecord r;
+    printf("StaffID   : "); scanf("%d", &r.staffId);
+    printf("Full Name : "); scanf("%s", r.fullName);
+    printf("Division  : "); scanf("%s", r.division);
+    printf("Pay       : "); scanf("%f", &r.payAmount);
+
+    chainAdd(r);
+    int l = linAdd(r), q = quadAdd(r), d = dhAdd(r);
+    printf("Chaining insert at primaryHash=%d\n", primaryHash(r.staffId));
+    printf("Linear   : %s\n", l ? "OK" : "TABLE FULL");
+    printf("Quadratic: %s\n", q ? "OK" : "TABLE FULL");
+    printf("Double   : %s\n", d ? "OK" : "TABLE FULL");
+}
+
+void findStaffInteractive(void) {
+    int id, h;
+    printf("StaffID to find: "); scanf("%d", &id);
+
+    Bucket *c = chainFind(id, &h);
+    printf("Chaining   : %s (hops=%d)\n", c ? "FOUND" : "NOT FOUND", h);
+    int li = linFind(id, &h);
+    printf("Linear     : %s (hops=%d)\n", li != -1 ? "FOUND" : "NOT FOUND", h);
+    int qi = quadFind(id, &h);
+    printf("Quadratic  : %s (hops=%d)\n", qi != -1 ? "FOUND" : "NOT FOUND", h);
+    int di = dhFind(id, &h);
+    printf("DoubleHash : %s (hops=%d)\n", di != -1 ? "FOUND" : "NOT FOUND", h);
+}
+
+void removeStaffInteractive(void) {
+    int id;
+    printf("StaffID to remove: "); scanf("%d", &id);
+    printf("Chaining   : %s\n", chainRemove(id) ? "REMOVED" : "NOT FOUND");
+    printf("Linear     : %s\n", linRemove(id) ? "REMOVED" : "NOT FOUND");
+    printf("Quadratic  : %s\n", quadRemove(id) ? "REMOVED" : "NOT FOUND");
+    printf("DoubleHash : %s\n", dhRemove(id) ? "REMOVED" : "NOT FOUND");
+}
+
+void showMenu(void) {
+    printf("\n======================================================================\n");
+    printf(" STAFF RECORD HASHING SYSTEM\n");
+    printf("======================================================================\n");
+    printf(" 1. Seed demo roster (into all 4 tables)\n");
+    printf(" 2. Add a staff record\n");
+    printf(" 3. Find a staff record (all schemes)\n");
+    printf(" 4. Remove a staff record (all schemes)\n");
+    printf(" 5. Show all four hash tables\n");
+    printf(" 6. Run validation test suite\n");
+    printf(" 7. Run benchmark (N = 150 / 600 / 1200 / 6000)\n");
+    printf(" 8. Quit\n");
+    printf("Choice: ");
+}
+
+int main(void) {
+    chainSetup(); linSetup(); quadSetup(); dhSetup();
+    int choice;
+    while (1) {
+        showMenu();
+        if (scanf("%d", &choice) != 1) break;
+        switch (choice) {
+            case 1: seedDemoRecords(); break;
+            case 2: addStaffInteractive(); break;
+            case 3: findStaffInteractive(); break;
+            case 4: removeStaffInteractive(); break;
+            case 5: showAllTables(); break;
+            case 6: runTestSuite(); break;
+            case 7: runBenchmark(); break;
+            case 8: printf("Goodbye.\n"); return 0;
+            default: printf("Not a valid choice.\n");
+        }
+    }
+    return 0;
+}
